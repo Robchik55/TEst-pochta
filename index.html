@@ -4897,6 +4897,9 @@ section{scroll-margin-top:84px}
     let sending = false;
     let turnstileWidgetId = null;
     let turnstileToken = '';
+    let tokenResolve = null;
+    let tokenReject = null;
+    let tokenTimeout = null;
 
     function setNote(text){
       if(note) note.textContent = text;
@@ -4923,47 +4926,129 @@ section{scroll-margin-top:84px}
       }catch(e){}
     }
 
+    function clearTokenWait(){
+      if(tokenTimeout){
+        clearTimeout(tokenTimeout);
+        tokenTimeout = null;
+      }
+      tokenResolve = null;
+      tokenReject = null;
+    }
+
     function resetTurnstile(){
       turnstileToken = '';
+      clearTokenWait();
+
       if(window.turnstile && turnstileWidgetId !== null){
-        try{ window.turnstile.reset(turnstileWidgetId); }catch(e){}
+        try{
+          window.turnstile.reset(turnstileWidgetId);
+        }catch(e){}
       }
     }
 
-    function renderTurnstile(){
+    function waitForTurnstileLibrary(){
+      return new Promise((resolve, reject) => {
+        const started = Date.now();
+
+        const check = () => {
+          if(window.turnstile){
+            resolve();
+            return;
+          }
+
+          if(Date.now() - started > 10000){
+            reject(new Error('Turnstile library timeout'));
+            return;
+          }
+
+          setTimeout(check, 100);
+        };
+
+        check();
+      });
+    }
+
+    async function ensureTurnstileRendered(){
       if(turnstileWidgetId !== null) return;
 
-      if(!window.turnstile){
-        setTimeout(renderTurnstile, 120);
-        return;
+      await waitForTurnstileLibrary();
+
+      turnstileWidgetId = window.turnstile.render('#contactTurnstile', {
+        sitekey: TURNSTILE_SITE_KEY,
+        theme: 'dark',
+        size: 'flexible',
+        appearance: 'interaction-only',
+        execution: 'execute',
+        action: 'contact',
+
+        callback: function(token){
+          turnstileToken = token || '';
+
+          if(tokenResolve && turnstileToken){
+            const resolve = tokenResolve;
+            clearTokenWait();
+            resolve(turnstileToken);
+          }
+
+          if(!sending && getUntil() <= Date.now()){
+            setNote(defaultNote);
+          }
+        },
+
+        'expired-callback': function(){
+          turnstileToken = '';
+        },
+
+        'error-callback': function(){
+          turnstileToken = '';
+
+          if(tokenReject){
+            const reject = tokenReject;
+            clearTokenWait();
+            reject(new Error('Turnstile error'));
+          }
+
+          if(!sending){
+            setNote('Не вдалося завершити перевірку безпеки. Спробуйте ще раз.');
+          }
+        },
+
+        'timeout-callback': function(){
+          turnstileToken = '';
+
+          if(tokenReject){
+            const reject = tokenReject;
+            clearTokenWait();
+            reject(new Error('Turnstile timeout'));
+          }
+        }
+      });
+    }
+
+    async function getFreshTurnstileToken(){
+      await ensureTurnstileRendered();
+
+      if(turnstileToken){
+        return turnstileToken;
       }
 
-      try{
-        turnstileWidgetId = window.turnstile.render('#contactTurnstile', {
-          sitekey: TURNSTILE_SITE_KEY,
-          theme: 'dark',
-          size: 'flexible',
-          appearance: 'interaction-only',
-          action: 'contact',
-          callback: function(token){
-            turnstileToken = token || '';
-            if(!sending && getUntil() <= Date.now()){
-              setNote(defaultNote);
-            }
-          },
-          'expired-callback': function(){
-            turnstileToken = '';
-          },
-          'error-callback': function(){
-            turnstileToken = '';
-            if(!sending){
-              setNote('Не вдалося завершити перевірку безпеки. Оновіть сторінку та спробуйте ще раз.');
-            }
-          }
-        });
-      }catch(e){
-        console.error('Turnstile render error:', e);
-      }
+      return new Promise((resolve, reject) => {
+        tokenResolve = resolve;
+        tokenReject = reject;
+
+        tokenTimeout = setTimeout(() => {
+          const rejectFn = tokenReject;
+          clearTokenWait();
+          if(rejectFn) rejectFn(new Error('Turnstile token timeout'));
+        }, 15000);
+
+        try{
+          window.turnstile.execute(turnstileWidgetId);
+        }catch(error){
+          clearTokenWait();
+          reject(error);
+        }
+      });
     }
 
     function applyState(){
@@ -5014,25 +5099,23 @@ section{scroll-margin-top:84px}
         return;
       }
 
-      if(!turnstileToken){
-        setNote('Зачекайте секунду — завершуємо перевірку безпеки.');
-        resetTurnstile();
-        return;
-      }
-
-      const payload = {
-        name: nameInput.value.trim(),
-        phone: '+380' + phoneInput.value.trim(),
-        message: messageInput.value.trim(),
-        turnstileToken: turnstileToken
-      };
-
       sending = true;
       button.disabled = true;
-      button.textContent = 'Надсилання...';
-      setNote(defaultNote);
+      button.textContent = 'Перевірка...';
+      setNote('Перевіряємо безпеку заявки...');
 
       try{
+        const token = await getFreshTurnstileToken();
+
+        button.textContent = 'Надсилання...';
+
+        const payload = {
+          name: nameInput.value.trim(),
+          phone: '+380' + phoneInput.value.trim(),
+          message: messageInput.value.trim(),
+          turnstileToken: token
+        };
+
         const response = await fetch(ENDPOINT, {
           method: 'POST',
           headers: {
@@ -5062,8 +5145,10 @@ section{scroll-margin-top:84px}
         button.disabled = false;
         button.textContent = 'Надіслати заявку';
 
-        if(error && /перевір/i.test(String(error.message || ''))){
-          setNote('Перевірка безпеки не пройдена. Спробуйте ще раз.');
+        const message = String(error && error.message ? error.message : '');
+
+        if(/Turnstile|перевір/i.test(message)){
+          setNote('Не вдалося пройти перевірку безпеки. Спробуйте ще раз.');
         }else{
           setNote('Не вдалося відправити заявку. Спробуйте ще раз.');
         }
@@ -5075,7 +5160,9 @@ section{scroll-margin-top:84px}
       }
     });
 
-    renderTurnstile();
+    ensureTurnstileRendered().catch((error) => {
+      console.error('Turnstile initialization error:', error);
+    });
 
     if(getUntil() > Date.now()){
       setNote('Заявка вже подана. Повторне відправлення буде доступне через 5 хвилин.');
