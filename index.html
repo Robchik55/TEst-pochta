@@ -3836,6 +3836,17 @@ section:not(.perf-active) *{
 </script>
 <!-- GRANDAVTO SEO END -->
 
+
+<!-- GRANDAVTO GA4 START -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-2C1KYJ381H"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+  gtag('config', 'G-2C1KYJ381H');
+</script>
+<!-- GRANDAVTO GA4 END -->
+
 </head>
 <body>
 <header class="header" id="header">
@@ -5277,6 +5288,13 @@ section:not(.perf-active) *{
           throw new Error(data.error || 'Не вдалося відправити заявку');
         }
 
+        if(typeof window.gtag === 'function'){
+          window.gtag('event', 'generate_lead', {
+            lead_source: 'contact_form',
+            form_name: 'GrandAvto Contact Form'
+          });
+        }
+
         form.reset();
         setUntil(Date.now() + COOLDOWN_MS);
 
@@ -5436,6 +5454,48 @@ section:not(.perf-active) *{
   }else{
     init();
   }
+})();
+</script>
+
+
+<script id="grandavto-ga4-events">
+(function(){
+  function sendEvent(name, params){
+    if(typeof window.gtag === 'function'){
+      window.gtag('event', name, params || {});
+    }
+  }
+
+  document.addEventListener('click', function(event){
+    const link = event.target.closest('a');
+    if(!link) return;
+
+    const href = (link.getAttribute('href') || '').trim();
+    const text = (link.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 120);
+
+    if(href.startsWith('tel:')){
+      sendEvent('phone_click', {
+        link_url: href,
+        link_text: text
+      });
+      return;
+    }
+
+    if(href.includes('t.me/grand_avto_lg')){
+      sendEvent('telegram_click', {
+        link_url: href,
+        link_text: text
+      });
+      return;
+    }
+
+    if(href === '#contacts' && /обговорити співпрацю/i.test(text)){
+      sendEvent('contact_cta_click', {
+        link_text: text,
+        placement: link.classList.contains('nav-cta') ? 'header' : 'page'
+      });
+    }
+  }, {passive:true});
 })();
 </script>
 
