@@ -3743,6 +3743,7 @@ section{scroll-margin-top:84px}
 }
 </style>
 
+<script src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit" defer></script>
 </head>
 <body>
 <header class="header" id="header">
@@ -4012,7 +4013,8 @@ section{scroll-margin-top:84px}
   required
   placeholder="Що потрібно доставляти, місто, кількість точок, продукція, об'єм, графік"
 ></textarea></div></div>
-  <button class="btn primary submit" style="width:100%" type="submit">Надіслати заявку</button>
+  <div id="contactTurnstile" style="width:100%;min-height:0"></div>
+<button class="btn primary submit" style="width:100%" type="submit">Надіслати заявку</button>
   <div class="form-note">Ваші дані в безпеці й не передаються третім особам.</div>
 </form>
 </div>
@@ -4875,6 +4877,7 @@ section{scroll-margin-top:84px}
   const COOLDOWN_MS = 5 * 60 * 1000;
   const STORAGE_KEY = 'grandavto_contact_submit_until_v1';
   const ENDPOINT = 'https://grandavto-contact.atayan-rob24.workers.dev/';
+  const TURNSTILE_SITE_KEY = '0x4AAAAAAF-kWfRXu4nFbGc_';
 
   function init(){
     const form = document.getElementById('contactForm');
@@ -4885,12 +4888,19 @@ section{scroll-margin-top:84px}
     const nameInput = document.getElementById('contactName');
     const phoneInput = document.getElementById('contactPhone');
     const messageInput = document.getElementById('contactMessage');
+    const turnstileContainer = document.getElementById('contactTurnstile');
 
-    if(!button || !nameInput || !phoneInput || !messageInput) return;
+    if(!button || !nameInput || !phoneInput || !messageInput || !turnstileContainer) return;
 
     const defaultNote = note ? note.textContent : '';
     let timer = null;
     let sending = false;
+    let turnstileWidgetId = null;
+    let turnstileToken = '';
+
+    function setNote(text){
+      if(note) note.textContent = text;
+    }
 
     function getUntil(){
       try{
@@ -4913,8 +4923,47 @@ section{scroll-margin-top:84px}
       }catch(e){}
     }
 
-    function setNote(text){
-      if(note) note.textContent = text;
+    function resetTurnstile(){
+      turnstileToken = '';
+      if(window.turnstile && turnstileWidgetId !== null){
+        try{ window.turnstile.reset(turnstileWidgetId); }catch(e){}
+      }
+    }
+
+    function renderTurnstile(){
+      if(turnstileWidgetId !== null) return;
+
+      if(!window.turnstile){
+        setTimeout(renderTurnstile, 120);
+        return;
+      }
+
+      try{
+        turnstileWidgetId = window.turnstile.render('#contactTurnstile', {
+          sitekey: TURNSTILE_SITE_KEY,
+          theme: 'dark',
+          size: 'flexible',
+          appearance: 'interaction-only',
+          action: 'contact',
+          callback: function(token){
+            turnstileToken = token || '';
+            if(!sending && getUntil() <= Date.now()){
+              setNote(defaultNote);
+            }
+          },
+          'expired-callback': function(){
+            turnstileToken = '';
+          },
+          'error-callback': function(){
+            turnstileToken = '';
+            if(!sending){
+              setNote('Не вдалося завершити перевірку безпеки. Оновіть сторінку та спробуйте ще раз.');
+            }
+          }
+        });
+      }catch(e){
+        console.error('Turnstile render error:', e);
+      }
     }
 
     function applyState(){
@@ -4965,10 +5014,17 @@ section{scroll-margin-top:84px}
         return;
       }
 
+      if(!turnstileToken){
+        setNote('Зачекайте секунду — завершуємо перевірку безпеки.');
+        resetTurnstile();
+        return;
+      }
+
       const payload = {
         name: nameInput.value.trim(),
         phone: '+380' + phoneInput.value.trim(),
-        message: messageInput.value.trim()
+        message: messageInput.value.trim(),
+        turnstileToken: turnstileToken
       };
 
       sending = true;
@@ -4994,7 +5050,6 @@ section{scroll-margin-top:84px}
           throw new Error(data.error || 'Не вдалося відправити заявку');
         }
 
-        // Success: only now clear the form and start the 5-minute cooldown.
         form.reset();
         setUntil(Date.now() + COOLDOWN_MS);
 
@@ -5006,12 +5061,21 @@ section{scroll-margin-top:84px}
       }catch(error){
         button.disabled = false;
         button.textContent = 'Надіслати заявку';
-        setNote('Не вдалося відправити заявку. Спробуйте ще раз.');
+
+        if(error && /перевір/i.test(String(error.message || ''))){
+          setNote('Перевірка безпеки не пройдена. Спробуйте ще раз.');
+        }else{
+          setNote('Не вдалося відправити заявку. Спробуйте ще раз.');
+        }
+
         console.error('GrandAvto form error:', error);
       }finally{
         sending = false;
+        resetTurnstile();
       }
     });
+
+    renderTurnstile();
 
     if(getUntil() > Date.now()){
       setNote('Заявка вже подана. Повторне відправлення буде доступне через 5 хвилин.');
