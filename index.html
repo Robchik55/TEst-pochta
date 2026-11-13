@@ -3744,6 +3744,29 @@ section{scroll-margin-top:84px}
 </style>
 
 <script src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit" defer></script>
+
+<style id="grandavto-performance-optimizations">
+/* Performance-only overrides: visual design stays the same. */
+section:not(.perf-active) *{
+  animation-play-state:paused !important;
+}
+
+@media (min-width:981px){
+  /* The fixed desktop header is always visible, so avoid expensive blur interpolation while scrolling. */
+  #header{
+    will-change:auto !important;
+    -webkit-backdrop-filter:blur(8px) !important;
+    backdrop-filter:blur(8px) !important;
+    transition:background .22s ease,border-color .22s ease,box-shadow .22s ease !important;
+  }
+
+  #header .menu a{
+    -webkit-backdrop-filter:none !important;
+    backdrop-filter:none !important;
+  }
+}
+</style>
+
 </head>
 <body>
 <header class="header" id="header">
@@ -4045,6 +4068,19 @@ section{scroll-margin-top:84px}
 
   const syncHeader = () => {
     const currentY = Math.max(0, window.scrollY);
+
+    // Desktop header is intentionally static. Avoid unnecessary class churn
+    // and transform calculations on every scroll frame.
+    if (window.innerWidth >= 981) {
+      header.classList.remove('header-hidden');
+      header.classList.add('header-visible');
+      header.classList.toggle('scrolled', currentY > 18);
+      lastScrollY = currentY;
+      accumulatedDelta = 0;
+      ticking = false;
+      return;
+    }
+
     const delta = currentY - lastScrollY;
 
     header.classList.toggle('scrolled', currentY > 18);
@@ -4106,8 +4142,7 @@ section{scroll-margin-top:84px}
       entries.forEach(entry => {
         if (entry.isIntersecting) {
           entry.target.classList.add('visible');
-        } else {
-          entry.target.classList.remove('visible');
+          observer.unobserve(entry.target);
         }
       });
     }, {
@@ -4148,6 +4183,15 @@ section{scroll-margin-top:84px}
   'use strict';
   const hero = document.querySelector('.hero');
   if (!hero || !window.HTMLCanvasElement) return;
+
+  // Keep the visual effect, but spend less CPU/GPU on it so scrolling stays smooth.
+  const PERF_LOW =
+    window.matchMedia('(max-width: 980px)').matches ||
+    ((navigator.hardwareConcurrency || 8) <= 4);
+  const FX_DPR_CAP = PERF_LOW ? 1.10 : 1.25;
+  const CITY_DPR_CAP = PERF_LOW ? 1.25 : 1.50;
+  const FX_DENSITY = PERF_LOW ? 0.62 : 0.78;
+  const FX_FPS = PERF_LOW ? 30 : 40;
 
   /* ---------- Геометрія фото (у пікселях оригіналу 1672×941) ---------- */
   const IMG_W = 1672, IMG_H = 941;
@@ -4269,7 +4313,7 @@ section{scroll-margin-top:84px}
     W = Math.max(1, hero.clientWidth - left - right);
     H = Math.max(1, hero.clientHeight - top - bottom);
     Object.assign(canvas.style, { left: left + 'px', top: top + 'px', width: W + 'px', height: H + 'px' });
-    DPR = Math.min(window.devicePixelRatio || 1, 1.5);
+    DPR = Math.min(window.devicePixelRatio || 1, FX_DPR_CAP);
     canvas.width = Math.round(W * DPR);
     canvas.height = Math.round(H * DPR);
     // background-size: cover + background-position, як у самого фото
@@ -4290,7 +4334,7 @@ section{scroll-margin-top:84px}
       y0: Math.max(0, OY + CITY.y0 * S), y1: Math.min(H, OY + CITY.y1 * S)
     };
     const cw = Math.max(0, CB.x1 - CB.x0), ch = Math.max(0, CB.y1 - CB.y0);
-    CDPR = Math.min(window.devicePixelRatio || 1, 2);   // місто — чіткіше, як саме фото
+    CDPR = Math.min(window.devicePixelRatio || 1, CITY_DPR_CAP);   // enough sharpness for moving city layer
     Object.assign(cityCanvas.style, {
       left: BOX.left + CB.x0 + 'px', top: BOX.top + CB.y0 + 'px', width: cw + 'px', height: ch + 'px',
       display: cw > 0 && ch > 0 ? 'block' : 'none'
@@ -4348,7 +4392,7 @@ section{scroll-margin-top:84px}
     drops = [];
     const area = (W * H) / 1e6;
     for (const layer of LAYERS) {
-      const n = Math.round(layer.per * area);
+      const n = Math.round(layer.per * area * FX_DENSITY);
       for (let i = 0; i < n; i++) drops.push(newDrop(layer, true));
     }
   }
@@ -4360,7 +4404,7 @@ section{scroll-margin-top:84px}
     const z = initial ? DEPTH * ZB / rand(4, DEPTH) : rand(ZB * 0.5, ZB * 0.95);
     return { k: Math.cos(th) / Math.sin(th), z, tail: rand(1.6, 3.2), ph: rand(0, 6.28), f: rand(5, 11) };
   }
-  for (let i = 0; i < 95; i++) glints.push(newGlint(true));
+  for (let i = 0; i < Math.round(95 * FX_DENSITY); i++) glints.push(newGlint(true));
 
   /* ---------- Бризки від крапель на дорозі ---------- */
   const splashes = [];
@@ -4543,11 +4587,18 @@ section{scroll-margin-top:84px}
 
   /* ---------- Кадр ---------- */
   let lanePhase = 0, last = 0, raf = 0, running = false, t = 0;
+  let lastPaint = 0;
   const spawnAcc = WHEELS.map(() => 0);
   let splashAcc = 0;
 
   function frame(now) {
     raf = requestAnimationFrame(frame);
+
+    // The FX itself does not need to render at the display refresh rate.
+    // Throttling it frees the main thread/GPU for smooth page scrolling.
+    if (lastPaint && (now - lastPaint) < (1000 / FX_FPS)) return;
+    lastPaint = now;
+
     const dt = Math.min(0.05, (now - (last || now)) / 1000);
     last = now;
     t += dt;
@@ -4606,7 +4657,7 @@ section{scroll-margin-top:84px}
     }
 
     // 3. Кола від крапель на асфальті
-    splashAcc += dt * 70 * Math.min(2, W * H / 1.2e6);
+    splashAcc += dt * 70 * FX_DENSITY * Math.min(2, W * H / 1.2e6);
     while (splashAcc >= 1) { splashAcc -= 1; spawnSplash(); }
     ctx.globalCompositeOperation = 'lighter';
     ctx.lineWidth = 0.8;
@@ -4635,7 +4686,7 @@ section{scroll-margin-top:84px}
     // 4. Водяний пил з-під коліс і хмара за причепом
     ctx.globalCompositeOperation = 'source-over';
     WHEELS.forEach((w, i) => {
-      spawnAcc[i] += w.rate * dt;
+      spawnAcc[i] += w.rate * dt * FX_DENSITY;
       while (spawnAcc[i] >= 1) { spawnAcc[i] -= 1; spawnMist(w); }
     });
     const drag = Math.exp(-1.8 * dt);
@@ -4683,6 +4734,7 @@ section{scroll-margin-top:84px}
     if (running || reduceMotion.matches || !inView) return;
     running = true;
     last = 0;
+    lastPaint = 0;
     raf = requestAnimationFrame(frame);
   }
   function stop(clearCity) {
@@ -4704,6 +4756,10 @@ section{scroll-margin-top:84px}
     }).observe(hero);
   }
   reduceMotion.addEventListener('change', () => (reduceMotion.matches ? stop(true) : start()));
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) stop(false);
+    else start();
+  }, { passive: true });
   start();
 })();
 
@@ -4744,8 +4800,18 @@ section{scroll-margin-top:84px}
 
     left.addEventListener('click',function(){step(-1)});
     right.addEventListener('click',function(){step(1)});
-    scroller.addEventListener('scroll',update,{passive:true});
-    window.addEventListener('resize',update,{passive:true});
+    var carouselTick=false;
+    function requestUpdate(){
+      if(carouselTick) return;
+      carouselTick=true;
+      requestAnimationFrame(function(){
+        update();
+        carouselTick=false;
+      });
+    }
+
+    scroller.addEventListener('scroll',requestUpdate,{passive:true});
+    window.addEventListener('resize',requestUpdate,{passive:true});
     requestAnimationFrame(function(){requestAnimationFrame(update)});
   }
 
@@ -4834,7 +4900,10 @@ section{scroll-margin-top:84px}
       }, true);
     });
 
-    window.addEventListener('scroll', function(){
+    var mobileHeaderTick = false;
+
+    function syncMobileHeader(){
+      mobileHeaderTick = false;
       var y = window.scrollY || 0;
       var delta = y - lastY;
 
@@ -4860,6 +4929,12 @@ section{scroll-margin-top:84px}
       }
 
       lastY = y;
+    }
+
+    window.addEventListener('scroll', function(){
+      if(mobileHeaderTick) return;
+      mobileHeaderTick = true;
+      requestAnimationFrame(syncMobileHeader);
     }, {passive:true});
   }
 
@@ -5253,6 +5328,38 @@ section{scroll-margin-top:84px}
     });
 
     requestUpdate();
+  }
+
+  if(document.readyState === 'loading'){
+    document.addEventListener('DOMContentLoaded', init, {once:true});
+  }else{
+    init();
+  }
+})();
+</script>
+
+
+<script id="grandavto-performance-section-observer">
+(function(){
+  function init(){
+    const sections = document.querySelectorAll('main section');
+    if(!sections.length) return;
+
+    if(!('IntersectionObserver' in window)){
+      sections.forEach(section => section.classList.add('perf-active'));
+      return;
+    }
+
+    const observer = new IntersectionObserver(entries => {
+      entries.forEach(entry => {
+        entry.target.classList.toggle('perf-active', entry.isIntersecting);
+      });
+    }, {
+      rootMargin: '220px 0px 220px 0px',
+      threshold: 0
+    });
+
+    sections.forEach(section => observer.observe(section));
   }
 
   if(document.readyState === 'loading'){
